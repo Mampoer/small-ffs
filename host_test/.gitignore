@@ -1,0 +1,6 @@
+build/
+flash.bin
+small-ffs-test.exe
+*.obj
+*.pdb
+*.ilk

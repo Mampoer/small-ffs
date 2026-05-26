@@ -1,4 +1,4 @@
-/*-----------------------------------------------------------------------------------*/
+//-------------------------------------------------------------------------------------
 // Copyright (c) 2009, Hein de Kock
 // All rights reserved.
 //
@@ -24,17 +24,28 @@
 // CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
 // ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
 // DAMAGE.
-/*-----------------------------------------------------------------------------------*/
+//-------------------------------------------------------------------------------------
 #ifndef __FLASH_DRIVER_H__
 #define __FLASH_DRIVER_H__
 
-//-------------------------------------------------------------------------------------
-#include "flash_config.h"
+#include <stdint.h>
+#include <stdbool.h>
 
+#include "flash_hw.h"
+
+//-------------------------------------------------------------------------------------
+// Wear leveling thresholds. WEAR_THRESHOLD is the initial gap below the global max
+// erase-count under which a sector is still considered "fair game" for new FAT pages.
+// The threshold is bumped by WEAR_THRESHOLD whenever no sector is found below it,
+// capped at MAX_WEAR_THRESHOLD.
 //-------------------------------------------------------------------------------------
 #define WEAR_THRESHOLD        5000
 #define MAX_WEAR_THRESHOLD    90000
 
+//-------------------------------------------------------------------------------------
+// sector_info_t lives at the first bytes of every sector. The 24-bit erase_count is
+// incremented each time the sector is erased; the high byte (flags) holds
+// ERASE_COUNT_KEY when valid so a freshly erased / virgin sector is distinguishable.
 //-------------------------------------------------------------------------------------
 typedef union sector_info
 {
@@ -47,38 +58,39 @@ typedef union sector_info
 } __attribute__((packed)) sector_info_t;
 
 //-------------------------------------------------------------------------------------
-//extern uint16_t    flash_sectors           ;
-//extern uint16_t    flash_sector_size       ;
-extern uint16_t    flash_page_size         ;
-extern uint16_t    flash_pages_per_sector  ;
-extern uint16_t    flash_first_page        ;
-extern uint16_t    flash_last_page         ;
+// Runtime geometry. flash_driver_init() detects the chip and fills these in. The
+// file system uses [file_system_start_page, file_system_end_page) — pages outside
+// that range may be reserved for the boot loader / quick-start FAT cache.
+//-------------------------------------------------------------------------------------
+extern uint32_t    flash_page_size         ;
+extern uint32_t    flash_pages_per_sector  ;
+extern uint32_t    file_system_start_page  ;
+extern uint32_t    file_system_end_page    ;
 
 //-------------------------------------------------------------------------------------
-#define sector_info_size          sizeof(sector_info_t)
-#define sector_number(page)       (page / flash_pages_per_sector)
+#define flash_sector_size (flash_pages_per_sector * flash_page_size)
 
 //-------------------------------------------------------------------------------------
-bool init_flash(void);
+#define sector_info_size sizeof(sector_info_t)
 
 //-------------------------------------------------------------------------------------
-void flash_driver_set_flash_read(uint16_t sector_address, uint16_t byte_address);
-void flash_driver_set_flash_write(uint16_t sector_address, uint16_t byte_address);
-void flash_driver_read(uint8_t *data, uint16_t len);
-void flash_driver_write(const uint8_t *data, uint16_t len);
-void flash_driver_read_release(void);
-void flash_driver_write_release(void);
+bool      flash_driver_init                     (void);
+void      hw_init_flash                         (void);
 
 //-------------------------------------------------------------------------------------
-void Flash_Erase_Sector(uint16_t sector_num);
+void      flash_driver_read                     (uint32_t flash_address, uint8_t *data, uint32_t len);
+int       flash_driver_write                    (uint32_t flash_address, const uint8_t *data, uint32_t len, bool verify);
 
 //-------------------------------------------------------------------------------------
-void      flash_sector_protect_callback(uint8_t status);
-void      Flash_Fail_Callback(void);
+void      flash_driver_erase_sector_address     (uint32_t flash_address, bool erase64k);
 
-//void      Format_Flash_Callback(void);
+//-------------------------------------------------------------------------------------
+void      flash_sector_protect_callback         (uint8_t status);
+void      Flash_Fail_Callback                   (void);
 
-void      watchdog_reset_callback(void);
+void      flash_driver_blocking_callback        (void);
+void      flash_driver_blocking_callback_start  (void);
+void      flash_driver_blocking_callback_end    (void);
 
 //-------------------------------------------------------------------------------------
 #endif

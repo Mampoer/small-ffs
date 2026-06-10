@@ -80,33 +80,27 @@ void DEBUG_printf (int level, char *file, int line, const char *ptr, ...);
 //  page, info->file_num, info->prev_page, info->next_page, info->link_num, filename ));
 //}
 
-////-------------------------------------------------------------------------------------
-//list_t          *open_file_list           __attribute__((section(".init2"))) = NULL;
-
-////-------------------------------------------------------------------------------------
-//FAT             current_fat               __attribute__((section(".init2"))) = { {0,0,0,0}, 0, 0, 0 };
-//FILE            *putchar_f                __attribute__((section(".init2"))) = NULL;
-//uint32_t        next_file_num             __attribute__((section(".init2"))) = 1;
-//int             open_file_list_size       __attribute__((section(".init2"))) = 0;
-////uint8_t         dead_page_revive_count    = 0;
-//uint32_t        start_search_page         __attribute__((section(".init2"))) = 0;
-//uint32_t        wear_threshold            __attribute__((section(".init2"))) = WEAR_THRESHOLD;
+//-------------------------------------------------------------------------------------
+// State previously held in bare globals is now in the fs_t singleton
+// flash_fs_obj (defined just below). open_file_list, current_fat,
+// next_file_num, open_file_list_size, start_search_page and wear_threshold
+// are accessed as flash_fs_obj.<member>.
+//-------------------------------------------------------------------------------------
 
 FILE            *putchar_f                = NULL;
 
 //-------------------------------------------------------------------------------------
 #define FLASH_OBJ_INIT_KEY  0xAA5A
 
-//fs_t flash_fs_obj ZERO_INIT = {
-//                      .open_file_list           = NULL,
-//                      .current_fat              = { {0,0,0,0}, 0, 0, 0 },
-//                      .next_file_num            = 1,
-//                      .open_file_list_size      = 0,
-//                      //.dead_page_revive_count   = 0,
-//                      .start_search_page        = 0,
-//                      .wear_threshold           = WEAR_THRESHOLD,
-//                      .init_key                 = FLASH_OBJ_INIT_KEY,
-//                    };
+fs_t flash_fs_obj ZERO_INIT = {
+                      .open_file_list           = NULL,
+                      .current_fat              = { {0,0,0,0}, 0, 0, 0 },
+                      .next_file_num            = 1,
+                      .open_file_list_size      = 0,
+                      .start_search_page        = 0,
+                      .wear_threshold           = WEAR_THRESHOLD,
+                      .init_key                 = FLASH_OBJ_INIT_KEY,
+                    };
 
 //-------------------------------------------------------------------------------------
 // FILE FUNCTIONS
@@ -779,7 +773,7 @@ void fs_fcloseall (fs_t *fs)
         debug_printf("file_list_cleanup %d\n\r", fs->open_file_list_size);
       }
       
-      list_walker = open_file_list;
+      list_walker = fs->open_file_list;
     }
   }
 }
@@ -1014,7 +1008,7 @@ int32_t fs_access (const char *fname)
 
       fs_reset_fat ();
 
-      while (fs_fat_get_next_entry (&current_fat, &file_info))
+      while (fs_fat_get_next_entry (&flash_fs_obj.current_fat, &file_info))
       {
         if (file_info.file_num)
         {
@@ -1722,7 +1716,7 @@ static bool  fs_advance_file (FILE * fp)
 //-------------------------------------------------------------------------------------
 static bool page_not_in_ram (uint32_t page)
 {
-  list_t *list_item = open_file_list;
+  list_t *list_item = flash_fs_obj.open_file_list;
 
  // debug_printf ("page_not_in_ram %u\n\r", page));
 
@@ -1736,7 +1730,7 @@ static bool page_not_in_ram (uint32_t page)
     list_item = list_item->next;
   }
   
-  if (current_fat.current_page == page)
+  if (flash_fs_obj.current_fat.current_page == page)
     return (false);
 
   return (true);
@@ -1753,44 +1747,44 @@ static uint32_t fs_find_open_page(void)
 
 //  debug_printf ("fs_find_open_page\n\r");
   
-  if (start_search_page < file_system_start_page
-    || start_search_page > file_system_end_page)
-    start_search_page = file_system_start_page;
+  if (flash_fs_obj.start_search_page < file_system_start_page
+    || flash_fs_obj.start_search_page > file_system_end_page)
+    flash_fs_obj.start_search_page = file_system_start_page;
   
-  end_search_page = start_search_page++;
+  end_search_page = flash_fs_obj.start_search_page++;
 
- // debug_printf(("fs_find_open_page start @ %u\n\r",start_search_page));
+ // debug_printf(("fs_find_open_page start @ %u\n\r",flash_fs_obj.start_search_page));
 
   sector_info.bytes.flags = 0; // force sector info read
 
   do
   {
-    for ( ; start_search_page <= file_system_end_page; start_search_page++)
+    for ( ; flash_fs_obj.start_search_page <= file_system_end_page; flash_fs_obj.start_search_page++)
     {
-      if ((start_search_page % flash_pages_per_sector == 0)
+      if ((flash_fs_obj.start_search_page % flash_pages_per_sector == 0)
         || (sector_info.bytes.flags != ERASE_COUNT_KEY))
-        read_page_sector_head (start_search_page, &sector_info);
+        read_page_sector_head (flash_fs_obj.start_search_page, &sector_info);
 
       if (sector_info.bytes.flags != ERASE_COUNT_KEY)
       {
-        debug_printf ("Sector check failed @ page %d (sector %d)\n\r", start_search_page, start_search_page / flash_pages_per_sector);
-        flash_driver_erase_sector_address (page_sector_address (start_search_page), false);   // wipe sector 70 ms
+        debug_printf ("Sector check failed @ page %d (sector %d)\n\r", flash_fs_obj.start_search_page, flash_fs_obj.start_search_page / flash_pages_per_sector);
+        flash_driver_erase_sector_address (page_sector_address (flash_fs_obj.start_search_page), false);   // wipe sector 70 ms
         sector_info.erase_count = 0;                                  // set_erase_count first
         sector_info.bytes.flags = ERASE_COUNT_KEY;
-        write_page_sector_head (start_search_page, &sector_info); // rewrite erase count
-        return (start_search_page);
+        write_page_sector_head (flash_fs_obj.start_search_page, &sector_info); // rewrite erase count
+        return (flash_fs_obj.start_search_page);
       }
       
-      if ((sector_info.erase_count & ERASE_COUNT_MASK) < wear_threshold)
+      if ((sector_info.erase_count & ERASE_COUNT_MASK) < flash_fs_obj.wear_threshold)
       {
-        read_page_info (start_search_page, &pagei);
+        read_page_info (flash_fs_obj.start_search_page, &pagei);
 
         if (pagei.file_num == 0xFFFFFFFF) // cleared and ready to be used
         {
-          if (page_not_in_ram (start_search_page)) // not in use by open file
+          if (page_not_in_ram (flash_fs_obj.start_search_page)) // not in use by open file
           {
-            // debug_printf(("using - %u\n\r",start_search_page));
-            return (start_search_page);
+            // debug_printf(("using - %u\n\r",flash_fs_obj.start_search_page));
+            return (flash_fs_obj.start_search_page);
           }
           
           free_pages_per_sector = 0xFFFFFFFF; // cant erase this sector
@@ -1798,7 +1792,7 @@ static uint32_t fs_find_open_page(void)
         else
         if (pagei.file_num == 0) // ready to be erased - check if whole sector can be erased
         {
-          if (start_search_page % flash_pages_per_sector == 0) // first page per sector
+          if (flash_fs_obj.start_search_page % flash_pages_per_sector == 0) // first page per sector
           {
             free_pages_per_sector = 1;
           }
@@ -1810,12 +1804,12 @@ static uint32_t fs_find_open_page(void)
           
           if (free_pages_per_sector == flash_pages_per_sector)
           {
-            debug_printf ("garbage collected @ sector %d!\n\r", start_search_page / flash_pages_per_sector);
-            flash_driver_erase_sector_address (page_sector_address (start_search_page), false); // wipe sector
+            debug_printf ("garbage collected @ sector %d!\n\r", flash_fs_obj.start_search_page / flash_pages_per_sector);
+            flash_driver_erase_sector_address (page_sector_address (flash_fs_obj.start_search_page), false); // wipe sector
             sector_info.erase_count++;                                    // inc erase count
             sector_info.bytes.flags = ERASE_COUNT_KEY;
-            write_page_sector_head (start_search_page, &sector_info); // rewrite erase count
-            return (start_search_page); // this is the last page in this sector but so be it
+            write_page_sector_head (flash_fs_obj.start_search_page, &sector_info); // rewrite erase count
+            return (flash_fs_obj.start_search_page); // this is the last page in this sector but so be it
           }
         }
         else // still in use
@@ -1830,39 +1824,39 @@ static uint32_t fs_find_open_page(void)
 
 //      else if ( pagei.file_num == 0xFFFFFFFF && !dead_page )
 //      {
-//        dead_page = start_search_page;
+//        dead_page = flash_fs_obj.start_search_page;
 //      }
     }
 
     sector_info.bytes.flags = 0;
     free_pages_per_sector = 0xFFFFFFFF;
     
-    for (start_search_page = file_system_start_page; start_search_page <= end_search_page ; start_search_page++)
+    for (flash_fs_obj.start_search_page = file_system_start_page; flash_fs_obj.start_search_page <= end_search_page ; flash_fs_obj.start_search_page++)
     {
-      if ((start_search_page % flash_pages_per_sector == 0)
+      if ((flash_fs_obj.start_search_page % flash_pages_per_sector == 0)
         || (sector_info.bytes.flags != ERASE_COUNT_KEY))
-        read_page_sector_head (start_search_page, &sector_info );
+        read_page_sector_head (flash_fs_obj.start_search_page, &sector_info );
       
       if (sector_info.bytes.flags != ERASE_COUNT_KEY)
       {
-        debug_printf ("Sector check failed @ page %d (sector %d)\n\r", start_search_page, start_search_page / flash_pages_per_sector);
-        flash_driver_erase_sector_address (page_sector_address (start_search_page), false); // wipe sector
+        debug_printf ("Sector check failed @ page %d (sector %d)\n\r", flash_fs_obj.start_search_page, flash_fs_obj.start_search_page / flash_pages_per_sector);
+        flash_driver_erase_sector_address (page_sector_address (flash_fs_obj.start_search_page), false); // wipe sector
         sector_info.erase_count = 0;                                  // set_erase_count first
         sector_info.bytes.flags = ERASE_COUNT_KEY;
-        write_page_sector_head (start_search_page, &sector_info); // rewrite erase count
-        return (start_search_page);
+        write_page_sector_head (flash_fs_obj.start_search_page, &sector_info); // rewrite erase count
+        return (flash_fs_obj.start_search_page);
       }
       
-      if ((sector_info.erase_count & ERASE_COUNT_MASK) < wear_threshold)
+      if ((sector_info.erase_count & ERASE_COUNT_MASK) < flash_fs_obj.wear_threshold)
       {
-        read_page_info (start_search_page, &pagei);
+        read_page_info (flash_fs_obj.start_search_page, &pagei);
 
         if (pagei.file_num == 0xFFFFFFFF) // cleared and ready to be used
         {
-          if (page_not_in_ram (start_search_page)) // not in use by open file
+          if (page_not_in_ram (flash_fs_obj.start_search_page)) // not in use by open file
           {
-            // debug_printf(("using - %u\n\r",start_search_page));
-            return (start_search_page);
+            // debug_printf(("using - %u\n\r",flash_fs_obj.start_search_page));
+            return (flash_fs_obj.start_search_page);
           }
           
           free_pages_per_sector = 0xFFFFFFFF; // cant erase this sector
@@ -1870,7 +1864,7 @@ static uint32_t fs_find_open_page(void)
         else
         if (pagei.file_num == 0) // ready to be erased - check if whole sector can be erased
         {
-          if (start_search_page % flash_pages_per_sector == 0) // first page per sector
+          if (flash_fs_obj.start_search_page % flash_pages_per_sector == 0) // first page per sector
           {
             free_pages_per_sector = 1;
           }
@@ -1882,12 +1876,12 @@ static uint32_t fs_find_open_page(void)
 
           if (free_pages_per_sector == flash_pages_per_sector)
           {
-            debug_printf ("garbage collected @ sector %d!\n\r", start_search_page / flash_pages_per_sector);
-            flash_driver_erase_sector_address (page_sector_address (start_search_page), false); // wipe sector
+            debug_printf ("garbage collected @ sector %d!\n\r", flash_fs_obj.start_search_page / flash_pages_per_sector);
+            flash_driver_erase_sector_address (page_sector_address (flash_fs_obj.start_search_page), false); // wipe sector
             sector_info.erase_count++;                                    // inc erase count
             sector_info.bytes.flags = ERASE_COUNT_KEY;
-            write_page_sector_head (start_search_page, &sector_info); // rewrite erase count
-            return (start_search_page); // this is the last page in this sector but so be it
+            write_page_sector_head (flash_fs_obj.start_search_page, &sector_info); // rewrite erase count
+            return (flash_fs_obj.start_search_page); // this is the last page in this sector but so be it
           }
         }
         else // still in use
@@ -1901,16 +1895,16 @@ static uint32_t fs_find_open_page(void)
       }
     }
     
-    if (over_wear && (wear_threshold < MAX_WEAR_THRESHOLD))
+    if (over_wear && (flash_fs_obj.wear_threshold < MAX_WEAR_THRESHOLD))
     {
-      wear_threshold += WEAR_THRESHOLD;
+      flash_fs_obj.wear_threshold += WEAR_THRESHOLD;
     }
 //    else if ( dead_page ) // may as well try to revive a dead page - we dont have any other space
 //    {
 //      if ( dead_page_revive_count++ < 10 )
 //      {
-//        start_search_page = dead_page;
-//        return (start_search_page);
+//        flash_fs_obj.start_search_page = dead_page;
+//        return (flash_fs_obj.start_search_page);
 //      }
 //      else
 //      {
@@ -1928,11 +1922,11 @@ static uint32_t fs_find_open_page(void)
 //find an available file block by checking the file number entry
 static FILE *fs_get_file_mem (void)
 {
-  FILE *file = list_add (&open_file_list, sizeof(FILE), "file");
+  FILE *file = list_add (&flash_fs_obj.open_file_list, sizeof(FILE), "file");
   
   if (file)
   {
-    open_file_list_size++;
+    flash_fs_obj.open_file_list_size++;
     return file;
   }
   
@@ -1946,7 +1940,7 @@ static void fs_free_file_mem (FILE *fp)
 {
   if (fp)
   {
-    list_remove (&open_file_list, fp, file_list_cleanup, NULL);
+    list_remove (&flash_fs_obj.open_file_list, fp, file_list_cleanup, NULL);
   }
   else
   {
@@ -1957,7 +1951,7 @@ static void fs_free_file_mem (FILE *fp)
 //-------------------------------------------------------------------------------------
 static bool fp_valid (FILE *fp)
 {
-  list_t *list_item = open_file_list;
+  list_t *list_item = flash_fs_obj.open_file_list;
   
   while (list_item)
   {
@@ -2010,7 +2004,7 @@ static bool  fs_format_fname (char *fname_buf, const char *fname)
 // Must pass uppercase filename to this function
 static bool fs_file_is_open (char *fname)
 {
-  list_t *list_walker = open_file_list;
+  list_t *list_walker = flash_fs_obj.open_file_list;
   
   while (list_walker)
   {
@@ -2040,7 +2034,7 @@ static bool  fs_find_file_info (char *uppercase_fname, FILE *fp)
   
   fs_reset_fat ();
 
-  while (fs_fat_get_next_entry (&current_fat, &fp->file_info))
+  while (fs_fat_get_next_entry (&flash_fs_obj.current_fat, &fp->file_info))
   {
     if (fp->file_info.file_num)
       if (strcmp (uppercase_fname, fp->file_info.name) == 0)
@@ -2059,7 +2053,7 @@ static bool fs_find_file_num (uint32_t filenum, FILE *fp)
 
   fs_reset_fat ();
 
-  while (fs_fat_get_next_entry (&current_fat, &fp->file_info))
+  while (fs_fat_get_next_entry (&flash_fs_obj.current_fat, &fp->file_info))
   {
     if (fp->file_info.file_num == filenum)
     {
@@ -2143,9 +2137,9 @@ static bool  fs_reverse_info (FILE *fp)
 //-------------------------------------------------------------------------------------
 static bool fs_get_file_num (FILE *fp)
 {
-  list_t *list_item = open_file_list;
+  list_t *list_item = flash_fs_obj.open_file_list;
   file_info_t spare_info;
-  uint32_t first_file_num = next_file_num;
+  uint32_t first_file_num = flash_fs_obj.next_file_num;
 
   //debug_printf ("fs_get_file_num\n\r");
   
@@ -2155,36 +2149,36 @@ static bool fs_get_file_num (FILE *fp)
   {
     fs_reset_fat();
   
-    while (fs_fat_get_next_entry (&current_fat, &spare_info))
+    while (fs_fat_get_next_entry (&flash_fs_obj.current_fat, &spare_info))
     {
-      if (spare_info.file_num == next_file_num)
+      if (spare_info.file_num == flash_fs_obj.next_file_num)
       {
         fs_reset_fat (); // restart search with new file num
-        next_file_num++;
+        flash_fs_obj.next_file_num++;
 
-        if (next_file_num >= FIRST_FAT_FILE_NUM)
+        if (flash_fs_obj.next_file_num >= FIRST_FAT_FILE_NUM)
         {
-          next_file_num = 1;
+          flash_fs_obj.next_file_num = 1;
         }
         
-        if (next_file_num == first_file_num) // searched all posible file numbers
+        if (flash_fs_obj.next_file_num == first_file_num) // searched all posible file numbers
           return false;
       }
     }
 
     while (list_item)
     {
-      if (((FILE *)&list_item->memory)->file_info.file_num == next_file_num)
+      if (((FILE *)&list_item->memory)->file_info.file_num == flash_fs_obj.next_file_num)
       {
-        list_item = open_file_list; // restart search with new file num
-        next_file_num ++;
+        list_item = flash_fs_obj.open_file_list; // restart search with new file num
+        flash_fs_obj.next_file_num ++;
 
-        if (next_file_num >= FIRST_FAT_FILE_NUM)
+        if (flash_fs_obj.next_file_num >= FIRST_FAT_FILE_NUM)
         {
-          next_file_num = 1;
+          flash_fs_obj.next_file_num = 1;
         }
         
-        if (next_file_num == first_file_num) // searched all posible file numbers
+        if (flash_fs_obj.next_file_num == first_file_num) // searched all posible file numbers
           return false;
         
         break; // from while ( list_item )
@@ -2195,7 +2189,7 @@ static bool fs_get_file_num (FILE *fp)
     
     if (!list_item) // nothing found in ram
     {
-      fp->file_info.file_num  = next_file_num;
+      fp->file_info.file_num  = flash_fs_obj.next_file_num;
       return true;
     }
     
@@ -2278,7 +2272,7 @@ int32_t read_file_list (char *name, uint32_t *filenum, uint32_t *filesize)
     file_info_t spare_info;
    // debug_printf ("read_file_list "));
     
-    while (fs_fat_get_next_entry (&current_fat, &spare_info))
+    while (fs_fat_get_next_entry (&flash_fs_obj.current_fat, &spare_info))
     {
       if (spare_info.file_num)
       {
@@ -2314,8 +2308,8 @@ void Format_fs (void)
     return;
   }
   
-  fs_fcloseall ();
-  
+  fs_fcloseall (&flash_fs_obj);
+
   if (fs_mutex_take ())
   {
     sector_info_t sector_info = {0};
@@ -2347,7 +2341,7 @@ void Format_fs (void)
     }
     
     flash_driver_save_quick_start_fat (0);
-    memset (&current_fat, 0, sizeof (FAT));
+    memset (&flash_fs_obj.current_fat, 0, sizeof (FAT));
     fs_mutex_give ();
   }
 }
@@ -2375,15 +2369,15 @@ static void fs_reset_fat (void)
 {
   //debug_printf ("fs_reset_fat - "));
 
-  if (current_fat.start_page)
+  if (flash_fs_obj.current_fat.start_page)
   {
-    current_fat.current_offset = 0;        // fat must always start on the first char of the page
+    flash_fs_obj.current_fat.current_offset = 0;        // fat must always start on the first char of the page
 
-    if (current_fat.current_page != current_fat.start_page)
+    if (flash_fs_obj.current_fat.current_page != flash_fs_obj.current_fat.start_page)
     {
-      current_fat.current_page = current_fat.start_page;  // reset fat to start
+      flash_fs_obj.current_fat.current_page = flash_fs_obj.current_fat.start_page;  // reset fat to start
       
-      read_page_info (current_fat.current_page, &current_fat.page_info);
+      read_page_info (flash_fs_obj.current_fat.current_page, &flash_fs_obj.current_fat.page_info);
 
      // debug_printf ("reloaded info/buffer\n\r");
     }
@@ -2393,7 +2387,7 @@ static void fs_reset_fat (void)
   else
   {
     debug_printf ("fs_reset_fat - failed - no start page\n\r");
-    fs_init_fat (&current_fat);
+    fs_init_fat (&flash_fs_obj.current_fat);
   }
 }
 
@@ -2689,14 +2683,14 @@ static void fs_recreate_fat (void)
   
   fs_reset_fat();                                                       // reset current fat
   
-  uint32_t new_fat_file_num = current_fat.page_info.file_num + 1;
+  uint32_t new_fat_file_num = flash_fs_obj.current_fat.page_info.file_num + 1;
   
   if (new_fat_file_num == 0xFFFFFFFF)
     new_fat_file_num = FIRST_FAT_FILE_NUM;
   
   if (fs_create_fat (&new_fat, new_fat_file_num))
   {
-    while (fs_fat_get_next_entry (&current_fat, &fat_entry))
+    while (fs_fat_get_next_entry (&flash_fs_obj.current_fat, &fat_entry))
     {
       if (fat_entry.file_num)
       {
@@ -2711,9 +2705,9 @@ static void fs_recreate_fat (void)
   }
   
   // seems all went well - remove old fat
-  fs_remove_file_chain(current_fat.start_page);
-  memcpy( &current_fat, &new_fat, sizeof(FAT) );
-  flash_driver_save_quick_start_fat (current_fat.start_page);
+  fs_remove_file_chain(flash_fs_obj.current_fat.start_page);
+  memcpy( &flash_fs_obj.current_fat, &new_fat, sizeof(FAT) );
+  flash_driver_save_quick_start_fat (flash_fs_obj.current_fat.start_page);
 }
 
 //-------------------------------------------------------------------------------------
@@ -2729,18 +2723,18 @@ static void fs_fat_add (file_info_t *new_fat_entry)
   
   fs_reset_fat ();                                                      // reset current fat
   
-  while (fs_fat_get_next_entry (&current_fat, &fat_entry))
+  while (fs_fat_get_next_entry (&flash_fs_obj.current_fat, &fat_entry))
   {
     if (fat_entry.file_num == 0)
       blank_entries++;
   }
   
-  if (blank_entries > (page_data_size (current_fat.current_page)/ sizeof(file_info_t)))  // over half the page entries are blank write a new fat
+  if (blank_entries > (page_data_size (flash_fs_obj.current_fat.current_page)/ sizeof(file_info_t)))  // over half the page entries are blank write a new fat
   {
     fs_recreate_fat();
   }
   
-  if (!fs_fat_put_next_entry (&current_fat, new_fat_entry, "CURR FAT"))
+  if (!fs_fat_put_next_entry (&flash_fs_obj.current_fat, new_fat_entry, "CURR FAT"))
   {
     pseffs_error_callback (PSEFFS_ERROR_MEDIA_ERROR);
   }
@@ -2757,11 +2751,11 @@ static bool fs_fat_remove_num (uint32_t file_num)
   
   while (1)
   {
-    if ((current_fat.current_offset + sizeof (file_info_t)) >= page_data_size (current_fat.current_page))
-      if (!fs_advance_fat (&current_fat))
+    if ((flash_fs_obj.current_fat.current_offset + sizeof (file_info_t)) >= page_data_size (flash_fs_obj.current_fat.current_page))
+      if (!fs_advance_fat (&flash_fs_obj.current_fat))
         return false;
     
-    read_fat_entry (current_fat.current_page, current_fat.current_offset, &fat_entry);
+    read_fat_entry (flash_fs_obj.current_fat.current_page, flash_fs_obj.current_fat.current_offset, &fat_entry);
   
     if (fat_entry.file_num == 0xFFFFFFFF)
       return false;
@@ -2770,11 +2764,11 @@ static bool fs_fat_remove_num (uint32_t file_num)
     {
       fat_entry.file_num = 0;
       
-      if (fs_fat_put_next_entry (&current_fat, &fat_entry, "CURR FAT"))
+      if (fs_fat_put_next_entry (&flash_fs_obj.current_fat, &fat_entry, "CURR FAT"))
         return (true);
     }
     
-    current_fat.current_offset += sizeof (file_info_t);
+    flash_fs_obj.current_fat.current_offset += sizeof (file_info_t);
   }
 }
 
@@ -2819,7 +2813,7 @@ void fs_scan_media (void)
 
   fs_reset_fat ();
   
-  while (fs_fat_get_next_entry (&current_fat, &fat_entry))
+  while (fs_fat_get_next_entry (&flash_fs_obj.current_fat, &fat_entry))
   {
     if (fat_entry.file_num
       && fat_entry.file_num != 0xFFFFFFFF)
@@ -2874,7 +2868,7 @@ void fs_scan_media (void)
         
           fs_reset_fat ();
         
-          while (!linked && fs_fat_get_next_entry (&current_fat, &fat_entry))
+          while (!linked && fs_fat_get_next_entry (&flash_fs_obj.current_fat, &fat_entry))
           {
             if (fat_entry.file_num == page_info.file_num)
             {
@@ -2914,12 +2908,12 @@ void fs_scan_media (void)
 
           do
           {
-            if (current_fat.current_page == page)
+            if (flash_fs_obj.current_fat.current_page == page)
             {
               linked = true;
               break;
             }
-          } while (fs_advance_fat (&current_fat));
+          } while (fs_advance_fat (&flash_fs_obj.current_fat));
         }
         else // fatbak page
         {
